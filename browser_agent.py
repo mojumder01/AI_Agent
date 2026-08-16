@@ -1,0 +1,173 @@
+from playwright.sync_api import sync_playwright, BrowserContext, Page
+import time
+import os
+
+
+PROFILE_DIR = os.path.expanduser("~/.claude_agent_browser_profile")
+
+
+class ClaudeAgent:
+    def __init__(self):
+        self._pw = None
+        self._context: BrowserContext | None = None
+        self._page: Page | None = None
+
+    def start(self):
+        os.makedirs(PROFILE_DIR, exist_ok=True)
+        self._pw = sync_playwright().start()
+        self._context = self._pw.chromium.launch_persistent_context(
+            user_data_dir=PROFILE_DIR,
+            headless=False,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            viewport={"width": 1200, "height": 800},
+        )
+        if self._context.pages:
+            self._page = self._context.pages[0]
+        else:
+            self._page = self._context.new_page()
+
+    def go_to_conversation(self, url: str):
+        self._page.goto(url, wait_until="domcontentloaded")
+        time.sleep(2)
+
+    def send_message(self, text: str, image_path: str | None = None) -> str:
+        """টেক্সট (এবং ছবি) Claude chat-এ পাঠায় এবং রেসপন্স রিটার্ন করে।"""
+        # ইনপুট বক্স খোঁজা
+        input_selectors = [
+            'div[contenteditable="true"]',
+            'div[data-lexical-editor="true"]',
+            'div.ProseMirror',
+        ]
+        input_box = None
+        for sel in input_selectors:
+            try:
+                self._page.wait_for_selector(sel, timeout=8000)
+                boxes = self._page.locator(sel).all()
+                if boxes:
+                    input_box = boxes[-1]
+                    break
+            except Exception:
+                continue
+
+        if input_box is None:
+            raise RuntimeError("Claude-এর input box পাওয়া যায়নি। পেজ ঠিকমতো লোড হয়েছে কিনা দেখুন।")
+
+        # ছবি আটাচ করা (image check task-এর জন্য)
+        if image_path and os.path.exists(image_path):
+            self._attach_image(image_path)
+            time.sleep(1)
+
+        # টেক্সট টাইপ করা
+        input_box.click()
+        time.sleep(0.3)
+        # আগের টেক্সট মুছে দেওয়া
+        input_box.press("Control+a")
+        input_box.press("Backspace")
+        time.sleep(0.2)
+        # নতুন টেক্সট পেস্ট (type-এর চেয়ে দ্রুত)
+        self._page.evaluate(
+            """(text) => {
+                const el = document.querySelector('div[contenteditable="true"]:last-of-type') ||
+                           document.querySelector('div[contenteditable="true"]');
+                if (el) {
+                    el.focus();
+                    document.execCommand('insertText', false, text);
+                }
+            }""",
+            text,
+        )
+        time.sleep(0.5)
+
+        # Enter চেপে পাঠানো
+        input_box.press("Enter")
+        time.sleep(1)
+
+        # রেসপন্স আসা পর্যন্ত অপেক্ষা
+        return self._wait_for_response()
+
+    def _attach_image(self, image_path: str):
+        """ছবি আটাচ করার চেষ্টা করে।"""
+        try:
+            file_input = self._page.locator('input[type="file"]').first
+            file_input.set_input_files(image_path)
+        except Exception:
+            # ফাইল ইনপুট না থাকলে ক্লিপবোর্ড দিয়ে চেষ্টা
+            try:
+                self._page.evaluate("""
+                    async (path) => {
+                        const response = await fetch('file://' + path);
+                        const blob = await response.blob();
+                        const item = new ClipboardItem({ [blob.type]: blob });
+                        await navigator.clipboard.write([item]);
+                    }
+                """, image_path)
+                input_box = self._page.locator('div[contenteditable="true"]').last
+                input_box.press("Control+v")
+            except Exception:
+                pass
+
+    def _wait_for_response(self) -> str:
+        """Claude-এর স্ট্রিমিং শেষ হওয়া পর্যন্ত অপেক্ষা করে রেসপন্স রিটার্ন করে।"""
+        # স্ট্রিমিং শুরু হওয়ার জন্য একটু অপেক্ষা
+        time.sleep(3)
+
+        # Stop বাটন দেখা যাচ্ছে কিনা চেক করে অপেক্ষা
+        stop_selectors = [
+            'button[aria-label="Stop"]',
+            'button[aria-label="Stop generating"]',
+            'button[data-testid="stop-button"]',
+        ]
+        max_wait = 120
+        start = time.time()
+
+        while time.time() - start < max_wait:
+            found_stop = False
+            for sel in stop_selectors:
+                if self._page.locator(sel).count() > 0:
+                    found_stop = True
+                    break
+            if not found_stop:
+                break
+            time.sleep(1)
+
+        # এক্সট্রা রেন্ডারের জন্য অপেক্ষা
+        time.sleep(1.5)
+
+        return self._extract_last_response()
+
+    def _extract_last_response(self) -> str:
+        """পেজ থেকে Claude-এর শেষ রেসপন্স বের করে।"""
+        selectors = [
+            '[data-message-author-role="assistant"] .prose',
+            '[data-message-author-role="assistant"]',
+            '.font-claude-message',
+        ]
+        for sel in selectors:
+            elements = self._page.locator(sel).all()
+            if elements:
+                return elements[-1].inner_text().strip()
+
+        # Fallback: সব মেসেজ বক্স থেকে শেষটা
+        all_msgs = self._page.locator('.whitespace-pre-wrap').all()
+        if all_msgs:
+            return all_msgs[-1].inner_text().strip()
+
+        return ""
+
+    def is_alive(self) -> bool:
+        try:
+            return self._page is not None and not self._page.is_closed()
+        except Exception:
+            return False
+
+    def close(self):
+        try:
+            if self._context:
+                self._context.close()
+            if self._pw:
+                self._pw.stop()
+        except Exception:
+            pass
+        self._page = None
+        self._context = None
+        self._pw = None

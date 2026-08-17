@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import os
+import traceback
 from excel_handler import load_excel, save_result, find_image_column, get_next_empty_row, to_excel_bytes
 
 st.set_page_config(page_title="AI Product Agent", page_icon="🤖", layout="wide")
@@ -202,7 +203,8 @@ def render_menu(menu: dict):
                             st.session_state[f"response_{key}"] = response
                             st.rerun()
                         except Exception as e:
-                            st.error(f"Error: {e}")
+                            st.error(f"Error: {type(e).__name__}: {e}")
+                            st.code(traceback.format_exc())
 
         response_text = st.session_state.get(f"response_{key}", "")
 

@@ -5,7 +5,7 @@ Claude chat automation — Excel থেকে ডেটা নিয়ে Claud
 ## প্রথমবার সেটআপ
 
 ### Windows (সহজ উপায়)
-`run.bat` ফাইলে ডাবল-ক্লিক করুন — এটা automatically virtual environment বানাবে, dependencies ইনস্টল করবে, Playwright Chromium ইনস্টল করবে, এবং অ্যাপ চালু করবে। পরের বার চালাতেও এই একই ফাইলে ডাবল-ক্লিক করলেই হবে।
+`run.bat` ফাইলে ডাবল-ক্লিক করুন — এটা automatically virtual environment বানাবে, dependencies ইনস্টল করবে, Playwright Chromium ইনস্টল করবে, এবং অ্যাপ চালু করবে। পরের বার চালাতেও এই একই ফাইলে ডাবল-ক্লিক করলেই হবে — `requirements.txt` না বদলালে বা Chromium আগে থেকে ইনস্টল থাকলে সেই ধাপগুলো স্কিপ হয়ে যায়, তাই দ্বিতীয়বার থেকে চালু হতে অনেক দ্রুত হবে।
 
 ### Manual (সব OS)
 ```bash

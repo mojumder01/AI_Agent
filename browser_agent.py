@@ -6,7 +6,9 @@ import asyncio
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from playwright.sync_api import sync_playwright, BrowserContext, Page
+from playwright.sync_api import sync_playwright
+import threading
+import queue
 import time
 import os
 
@@ -15,41 +17,138 @@ PROFILE_DIR = os.path.expanduser("~/.claude_agent_browser_profile")
 
 
 class ClaudeAgent:
+    """
+    Playwright's sync API pins the browser session to whichever OS thread
+    started it. Streamlit runs each rerun (each button click) on a fresh
+    thread, so a naive "store the agent in session_state and call it again
+    later" breaks with `greenlet.error: cannot switch to a different thread`.
+
+    This class keeps the whole Playwright session inside one dedicated
+    background thread that stays alive across reruns; every public method
+    just enqueues a job for that thread and blocks for the result.
+    """
+
     def __init__(self):
+        self._req_q: queue.Queue = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._started = threading.Event()
+        self._start_error: Exception | None = None
+        self._page = None
+        self._context = None
         self._pw = None
-        self._context: BrowserContext | None = None
-        self._page: Page | None = None
+
+    # ── Worker thread lifecycle ─────────────────────────────────────────────
 
     def start(self):
-        os.makedirs(PROFILE_DIR, exist_ok=True)
-        self._pw = sync_playwright().start()
-        launch_kwargs = dict(
-            user_data_dir=PROFILE_DIR,
-            headless=False,
-            args=["--disable-blink-features=AutomationControlled"],
-            viewport={"width": 1200, "height": 800},
-        )
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        if not self._started.wait(timeout=60):
+            raise TimeoutError("ব্রাউজার চালু হতে দেরি হচ্ছে।")
+        if self._start_error:
+            raise self._start_error
+
+    def _run(self):
         try:
-            # আসল ইনস্টল করা Chrome ব্যবহার করলে claude.ai কম bot হিসেবে ধরে —
-            # bundled Chromium দিয়ে সেশন বারবার লগআউট হয়ে যাওয়ার সমস্যা কমে।
-            self._context = self._pw.chromium.launch_persistent_context(channel="chrome", **launch_kwargs)
+            os.makedirs(PROFILE_DIR, exist_ok=True)
+            self._pw = sync_playwright().start()
+            launch_kwargs = dict(
+                user_data_dir=PROFILE_DIR,
+                headless=False,
+                args=["--disable-blink-features=AutomationControlled"],
+                viewport={"width": 1200, "height": 800},
+            )
+            try:
+                # আসল ইনস্টল করা Chrome ব্যবহার করলে claude.ai কম bot হিসেবে ধরে —
+                # bundled Chromium দিয়ে সেশন বারবার লগআউট হয়ে যাওয়ার সমস্যা কমে।
+                self._context = self._pw.chromium.launch_persistent_context(channel="chrome", **launch_kwargs)
+            except Exception:
+                self._context = self._pw.chromium.launch_persistent_context(**launch_kwargs)
+            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        except Exception as e:
+            self._start_error = e
+            self._started.set()
+            return
+
+        self._started.set()
+
+        while True:
+            job = self._req_q.get()
+            if job is None:
+                break
+            job()
+
+        try:
+            if self._context:
+                self._context.close()
+            if self._pw:
+                self._pw.stop()
         except Exception:
-            self._context = self._pw.chromium.launch_persistent_context(**launch_kwargs)
-        if self._context.pages:
-            self._page = self._context.pages[0]
-        else:
-            self._page = self._context.new_page()
+            pass
+
+    def _call(self, fn, timeout=180):
+        """worker থ্রেডে fn() রান করে এবং রেজাল্ট/এরর ফেরত দেয়।"""
+        result = {}
+        event = threading.Event()
+
+        def wrapped():
+            try:
+                result["value"] = fn()
+            except Exception as e:
+                result["error"] = e
+            finally:
+                event.set()
+
+        self._req_q.put(wrapped)
+        if not event.wait(timeout=timeout):
+            raise TimeoutError("ব্রাউজার থ্রেড সাড়া দিচ্ছে না (timeout)।")
+        if "error" in result:
+            raise result["error"]
+        return result.get("value")
+
+    # ── Public API (safe to call from any thread; runs on the worker) ──────
 
     def go_to_conversation(self, url: str):
-        self._page.goto(url, wait_until="domcontentloaded")
-        time.sleep(2)
+        def job():
+            self._page.goto(url, wait_until="domcontentloaded")
+            time.sleep(2)
+        self._call(job)
 
     def open_login(self):
         """লগইন/সেশন সেভ করার জন্য claude.ai খোলে — ইউজার ম্যানুয়ালি লগইন করবেন।"""
-        self._page.goto("https://claude.ai", wait_until="domcontentloaded")
-        time.sleep(1)
+        def job():
+            self._page.goto("https://claude.ai", wait_until="domcontentloaded")
+            time.sleep(1)
+        self._call(job)
 
-    def is_logged_in(self) -> bool:
+    def send_message(self, text: str, image_path: str | None = None) -> str:
+        """টেক্সট (এবং ছবি) Claude chat-এ পাঠায় এবং রেসপন্স রিটার্ন করে।"""
+        return self._call(lambda: self._send_message_impl(text, image_path))
+
+    def is_alive(self) -> bool:
+        try:
+            return (
+                self._thread is not None
+                and self._thread.is_alive()
+                and self._page is not None
+                and not self._page.is_closed()
+            )
+        except Exception:
+            return False
+
+    def close(self):
+        try:
+            self._req_q.put(None)  # sentinel — worker loop closes context/pw and exits
+            if self._thread:
+                self._thread.join(timeout=15)
+        except Exception:
+            pass
+        self._page = None
+        self._context = None
+        self._pw = None
+
+    # ── Worker-thread-only internals (never call these directly) ───────────
+
+    def _is_logged_in(self) -> bool:
         try:
             url = self._page.url
             if "login" in url or "/auth" in url:
@@ -62,9 +161,8 @@ class ClaudeAgent:
         except Exception:
             return True
 
-    def send_message(self, text: str, image_path: str | None = None) -> str:
-        """টেক্সট (এবং ছবি) Claude chat-এ পাঠায় এবং রেসপন্স রিটার্ন করে।"""
-        if not self.is_logged_in():
+    def _send_message_impl(self, text: str, image_path: str | None) -> str:
+        if not self._is_logged_in():
             raise RuntimeError(
                 "Claude সেশন লগইন করা নেই। সাইডবার থেকে 'Claude-এ লগইন করুন / সেভ করুন' "
                 "বাটনে ক্লিক করে ব্রাউজার উইন্ডোতে লগইন করুন, তারপর আবার পাঠান।"
@@ -191,21 +289,3 @@ class ClaudeAgent:
             return all_msgs[-1].inner_text().strip()
 
         return ""
-
-    def is_alive(self) -> bool:
-        try:
-            return self._page is not None and not self._page.is_closed()
-        except Exception:
-            return False
-
-    def close(self):
-        try:
-            if self._context:
-                self._context.close()
-            if self._pw:
-                self._pw.stop()
-        except Exception:
-            pass
-        self._page = None
-        self._context = None
-        self._pw = None

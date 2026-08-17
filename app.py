@@ -4,7 +4,7 @@ import os
 import traceback
 from excel_handler import load_excel, save_result, find_image_column, get_next_empty_row, to_excel_bytes
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 BUILT_BY = "Muntasir"
 
 st.set_page_config(page_title="AI Product Agent", page_icon="🤖", layout="wide")

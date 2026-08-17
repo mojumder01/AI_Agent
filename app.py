@@ -92,9 +92,11 @@ def render_menu(menu: dict):
                 f.write(uploaded.read())
             st.session_state[f"df_{key}"] = load_excel(save_path)
             st.session_state[f"path_{key}"] = save_path
+            # নতুন ফাইলের কলাম অনুযায়ী সিলেকশন রিসেট
+            st.session_state[f"sel_cols_{key}"] = list(st.session_state[f"df_{key}"].columns)
             # অটো: প্রথম খালি রোতে যাওয়া
-            auto_row = get_next_empty_row(st.session_state[f"df_{key}"], out_col) or 0
-            st.session_state[f"row_{key}"] = auto_row
+            auto_row = get_next_empty_row(st.session_state[f"df_{key}"], out_col)
+            st.session_state[f"row_{key}"] = auto_row if auto_row is not None else 0
 
         # df না থাকলে বন্ধ
         if f"df_{key}" not in st.session_state:
@@ -106,6 +108,9 @@ def render_menu(menu: dict):
         init_state(f"response_{key}", "")
 
         total = len(df)
+        if total == 0:
+            st.warning("এই Excel ফাইলে কোনো ডেটা রো নেই।")
+            return
         cur = st.session_state[f"row_{key}"]
 
         # ── Row navigation ────────────────────────────────────────────────────

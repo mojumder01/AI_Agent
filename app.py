@@ -8,7 +8,7 @@ from excel_handler import (
 )
 from response_parser import extract_field
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 BUILT_BY = "Muntasir"
 
 st.set_page_config(page_title="AI Product Agent", page_icon="🤖", layout="wide")
@@ -26,6 +26,18 @@ def load_config() -> dict:
 def save_config(cfg: dict):
     with open(CONFIG_FILE, "w") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+# ── Browser agent helper ────────────────────────────────────────────────────
+
+def get_or_start_agent():
+    from browser_agent import ClaudeAgent
+
+    agent: ClaudeAgent = st.session_state.get("agent")
+    if agent is None or not agent.is_alive():
+        agent = ClaudeAgent()
+        agent.start()
+        st.session_state["agent"] = agent
+    return agent
 
 # ── Session state init ────────────────────────────────────────────────────────
 
@@ -184,19 +196,24 @@ def render_menu(menu: dict):
         st.session_state[f"sel_cols_{key}"] = selected_cols
 
         # ── Message preview ───────────────────────────────────────────────────
-        lines = [f"{c}: {row_data.get(c, '')}" for c in selected_cols if str(row_data.get(c, "")).strip()]
-        message_text = "\n".join(lines)
+        def build_message(row: dict):
+            """দেওয়া রো থেকে Claude-এ পাঠানোর মেসেজ ও (image_check হলে) ছবির path বানায়।
+            এক রো-এর preview এবং Full Auto — দুই জায়গায়ই ব্যবহার হয়।"""
+            lines = [f"{c}: {row.get(c, '')}" for c in selected_cols if str(row.get(c, "")).strip()]
+            text = "\n".join(lines)
+            img = None
+            if key == "image_check":
+                img_col = find_image_column(df)
+                if img_col:
+                    img = str(row.get(img_col, "")).strip() or None
+            return text, img
 
-        # Image column detection (image check only)
-        img_path = None
-        if key == "image_check":
-            img_col = find_image_column(df)
-            if img_col:
-                img_path = str(row_data.get(img_col, "")).strip()
-                if img_path:
-                    st.info(f"🖼️ Image path: `{img_path}`")
-                    if not os.path.exists(img_path):
-                        st.warning("⚠️ ছবির ফাইল পাওয়া যায়নি। Path ঠিক আছে কিনা দেখুন।")
+        message_text, img_path = build_message(row_data)
+
+        if key == "image_check" and img_path:
+            st.info(f"🖼️ Image path: `{img_path}`")
+            if not os.path.exists(img_path):
+                st.warning("⚠️ ছবির ফাইল পাওয়া যায়নি। Path ঠিক আছে কিনা দেখুন।")
 
         with st.expander(f"📋 রো {cur + 1}/{total} — Claude-এ যা পাঠানো হবে", expanded=True):
             st.code(message_text, language=None)
@@ -217,7 +234,7 @@ def render_menu(menu: dict):
 
         # ── Action buttons ────────────────────────────────────────────────────
         st.divider()
-        b1, b2, b3 = st.columns([2, 1, 1])
+        b1, b2, b3, b4 = st.columns([2, 1, 1, 2])
 
         with b1:
             send_disabled = not url or not message_text.strip()
@@ -227,15 +244,7 @@ def render_menu(menu: dict):
                 else:
                     with st.spinner("ব্রাউজার খুলছে এবং Claude-এ পাঠাচ্ছে..."):
                         try:
-                            from browser_agent import ClaudeAgent
-
-                            # Browser session রিইউজ করা
-                            agent: ClaudeAgent = st.session_state.get("agent")
-                            if agent is None or not agent.is_alive():
-                                agent = ClaudeAgent()
-                                agent.start()
-                                st.session_state["agent"] = agent
-
+                            agent = get_or_start_agent()
                             agent.go_to_conversation(url)
                             response = agent.send_message(
                                 message_text,
@@ -246,6 +255,68 @@ def render_menu(menu: dict):
                         except Exception as e:
                             st.error(f"Error: {type(e).__name__}: {e}")
                             st.code(traceback.format_exc())
+
+        with b4:
+            pending_rows = [i for i in range(total) if not row_is_done(df.iloc[i].to_dict(), out_col_list)]
+            auto_disabled = not url or not pending_rows
+            if st.button(
+                f"⚡ Full Auto ({len(pending_rows)} বাকি)",
+                key=f"auto_{key}",
+                disabled=auto_disabled,
+                help="সব বাকি রো একের পর এক, নিজে নিজে Claude-এ পাঠিয়ে সেভ করবে — এডিট করার সুযোগ থাকবে না।",
+            ):
+                path = st.session_state[f"path_{key}"]
+                local_df = df
+                progress_bar = st.progress(0.0)
+                status = st.empty()
+                failed = []
+
+                try:
+                    agent = get_or_start_agent()
+                    agent.go_to_conversation(url)
+
+                    for done_count, row_idx in enumerate(pending_rows, start=1):
+                        row = local_df.iloc[row_idx].to_dict()
+                        msg, img = build_message(row)
+                        status.info(f"রো {row_idx + 1}/{total} পাঠানো হচ্ছে... ({done_count}/{len(pending_rows)})")
+
+                        if not msg.strip():
+                            failed.append((row_idx + 1, "পাঠানোর মতো কোনো ডেটা নেই"))
+                        else:
+                            try:
+                                response = agent.send_message(
+                                    msg, image_path=img if key == "image_check" else None
+                                )
+                                if fields:
+                                    parsed = {label: extract_field(response, label) for label, _ in fields}
+                                    if not any(v.strip() for v in parsed.values()):
+                                        parsed[fields[0][0]] = response
+                                    values = {col: parsed.get(label, "") for label, col in out_cols}
+                                    local_df = save_results(local_df, row_idx, values, path)
+                                else:
+                                    local_df = save_result(local_df, row_idx, out_col, response, path)
+                            except Exception as e:
+                                failed.append((row_idx + 1, f"{type(e).__name__}: {e}"))
+
+                        progress_bar.progress(done_count / len(pending_rows))
+                except Exception as e:
+                    st.error(f"Error: {type(e).__name__}: {e}")
+                    st.code(traceback.format_exc())
+                finally:
+                    status.empty()
+                    st.session_state[f"df_{key}"] = local_df
+                    next_row = get_next_empty_row_multi(local_df, out_col_list)
+                    st.session_state[f"row_{key}"] = next_row if next_row is not None else total - 1
+                    st.session_state[f"response_{key}"] = ""
+
+                if failed:
+                    st.warning(
+                        f"✅ {len(pending_rows) - len(failed)}/{len(pending_rows)} রো সম্পন্ন। ব্যর্থ:\n"
+                        + "\n".join(f"রো {r}: {msg}" for r, msg in failed)
+                    )
+                else:
+                    st.success(f"✅ সব {len(pending_rows)} বাকি রো সম্পন্ন হয়েছে!")
+                st.rerun()
 
         response_text = st.session_state.get(f"response_{key}", "")
 
@@ -332,14 +403,7 @@ st.sidebar.header("⚙️ Browser")
 if st.sidebar.button("🔑 Claude-এ লগইন করুন / সেভ করুন"):
     with st.sidebar.status("ব্রাউজার খুলছে..."):
         try:
-            from browser_agent import ClaudeAgent
-
-            agent: ClaudeAgent = st.session_state.get("agent")
-            if agent is None or not agent.is_alive():
-                agent = ClaudeAgent()
-                agent.start()
-                st.session_state["agent"] = agent
-
+            agent = get_or_start_agent()
             agent.open_login()
         except Exception as e:
             st.sidebar.error(f"Error: {type(e).__name__}: {e}")

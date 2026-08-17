@@ -4,6 +4,9 @@ import os
 import traceback
 from excel_handler import load_excel, save_result, find_image_column, get_next_empty_row, to_excel_bytes
 
+APP_VERSION = "1.0.0"
+BUILT_BY = "Muntasir"
+
 st.set_page_config(page_title="AI Product Agent", page_icon="🤖", layout="wide")
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "agent_config.json")
@@ -35,6 +38,7 @@ cfg = st.session_state.config
 
 st.title("🤖 AI Product Agent")
 st.caption("Claude chat-এ একটা একটা করে প্রোডাক্ট প্রসেস করে Excel-এ সেভ করুন")
+st.caption(f"v{APP_VERSION} · Built by {BUILT_BY}")
 
 tab1, tab2, tab3 = st.tabs([
     "✍️  Highlights & Description",
@@ -262,3 +266,7 @@ if st.sidebar.button("🔴 Browser বন্ধ করুন"):
         agent.close()
         st.session_state["agent"] = None
     st.sidebar.success("Browser বন্ধ হয়েছে।")
+
+st.sidebar.divider()
+st.sidebar.caption(f"AI Product Agent v{APP_VERSION}")
+st.sidebar.caption(f"Built by {BUILT_BY}")

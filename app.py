@@ -8,7 +8,7 @@ from excel_handler import (
 )
 from response_parser import extract_field
 
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 BUILT_BY = "Muntasir"
 
 st.set_page_config(page_title="AI Product Agent", page_icon="🤖", layout="wide")
@@ -270,6 +270,9 @@ def render_menu(menu: dict):
                 progress_bar = st.progress(0.0)
                 status = st.empty()
                 failed = []
+                succeeded = 0
+                consecutive_failures = 0
+                stopped_early = False
 
                 try:
                     agent = get_or_start_agent()
@@ -280,6 +283,7 @@ def render_menu(menu: dict):
                         msg, img = build_message(row)
                         status.info(f"রো {row_idx + 1}/{total} পাঠানো হচ্ছে... ({done_count}/{len(pending_rows)})")
 
+                        row_ok = False
                         if not msg.strip():
                             failed.append((row_idx + 1, "পাঠানোর মতো কোনো ডেটা নেই"))
                         else:
@@ -289,16 +293,33 @@ def render_menu(menu: dict):
                                 )
                                 if fields:
                                     parsed = {label: extract_field(response, label) for label, _ in fields}
-                                    if not any(v.strip() for v in parsed.values()):
-                                        parsed[fields[0][0]] = response
-                                    values = {col: parsed.get(label, "") for label, col in out_cols}
-                                    local_df = save_results(local_df, row_idx, values, path)
+                                    if any(v.strip() for v in parsed.values()):
+                                        values = {col: parsed.get(label, "") for label, col in out_cols}
+                                        local_df = save_results(local_df, row_idx, values, path)
+                                        row_ok = True
+                                    else:
+                                        # লেবেল খুঁজে পাওয়া যায়নি (হয়তো Claude refuse করেছে বা
+                                        # অন্য কিছু বলেছে) — Full Auto-তে না সেভ করে failure হিসেবে
+                                        # দেখানো হচ্ছে, যাতে ভুল ডেটা সাইলেন্টলি সেভ না হয় এবং একই
+                                        # রো বারবার resend হয়ে Claude-কে duplicate spam-এর মতো না লাগে।
+                                        snippet = response.strip().replace("\n", " ")[:150]
+                                        failed.append((row_idx + 1, f"লেবেল পাওয়া যায়নি — Claude বলেছে: {snippet}"))
                                 else:
                                     local_df = save_result(local_df, row_idx, out_col, response, path)
+                                    row_ok = True
                             except Exception as e:
                                 failed.append((row_idx + 1, f"{type(e).__name__}: {e}"))
 
+                        if row_ok:
+                            succeeded += 1
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
                         progress_bar.progress(done_count / len(pending_rows))
+
+                        if consecutive_failures >= 3:
+                            stopped_early = True
+                            break
                 except Exception as e:
                     st.error(f"Error: {type(e).__name__}: {e}")
                     st.code(traceback.format_exc())
@@ -309,9 +330,18 @@ def render_menu(menu: dict):
                     st.session_state[f"row_{key}"] = next_row if next_row is not None else total - 1
                     st.session_state[f"response_{key}"] = ""
 
-                if failed:
+                if stopped_early:
+                    st.error(
+                        f"⛔ পরপর ৩টা রো ব্যর্থ হওয়ায় Full Auto থামানো হয়েছে (সম্ভবত browser/composer/সেশনে "
+                        f"সমস্যা, বা Claude একই কনভারসেশনে বারবার একই কনটেন্ট দেখে সন্দেহজনক মনে করছে)। "
+                        f"{succeeded}/{len(pending_rows)} রো সম্পন্ন হয়েছে।\n"
+                        "সমাধান: 'Browser বন্ধ করুন' চেপে ব্রাউজার রিস্টার্ট করুন, অথবা claude.ai-এ নতুন একটা "
+                        "conversation বানিয়ে সেই URL বসিয়ে আবার চেষ্টা করুন।\n\n"
+                        + "\n".join(f"রো {r}: {msg}" for r, msg in failed)
+                    )
+                elif failed:
                     st.warning(
-                        f"✅ {len(pending_rows) - len(failed)}/{len(pending_rows)} রো সম্পন্ন। ব্যর্থ:\n"
+                        f"✅ {succeeded}/{len(pending_rows)} রো সম্পন্ন। ব্যর্থ:\n"
                         + "\n".join(f"রো {r}: {msg}" for r, msg in failed)
                     )
                 else:

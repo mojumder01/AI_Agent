@@ -2,9 +2,13 @@ import streamlit as st
 import json
 import os
 import traceback
-from excel_handler import load_excel, save_result, find_image_column, get_next_empty_row, to_excel_bytes
+from excel_handler import (
+    load_excel, save_result, save_results, find_image_column,
+    get_next_empty_row, get_next_empty_row_multi, row_is_done, to_excel_bytes,
+)
+from response_parser import extract_field
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 BUILT_BY = "Muntasir"
 
 st.set_page_config(page_title="AI Product Agent", page_icon="🤖", layout="wide")
@@ -47,7 +51,12 @@ tab1, tab2, tab3 = st.tabs([
 ])
 
 MENUS = [
-    {"key": "highlights_desc", "tab": tab1, "out_col_default": "AI_Highlights_Description"},
+    {
+        "key": "highlights_desc",
+        "tab": tab1,
+        # একাধিক আউটপুট কলাম — Claude-এর উত্তর থেকে প্রতিটা label আলাদা কলামে সেভ হয়
+        "fields": [("Highlights", "AI_Highlights"), ("Description", "AI_Description")],
+    },
     {"key": "weight",          "tab": tab2, "out_col_default": "AI_Weight"},
     {"key": "image_check",     "tab": tab3, "out_col_default": "AI_Image_Check"},
 ]
@@ -55,6 +64,7 @@ MENUS = [
 
 def render_menu(menu: dict):
     key = menu["key"]
+    fields = menu.get("fields")  # multi-column mode হলে [(label, out_col_default), ...]
 
     with menu["tab"]:
 
@@ -72,15 +82,31 @@ def render_menu(menu: dict):
                 cfg[f"url_{key}"] = url
                 save_config(cfg)
 
-        with c2:
-            out_col = st.text_input(
-                "Output Column",
-                value=cfg.get(f"out_col_{key}", menu["out_col_default"]),
-                key=f"out_col_input_{key}",
-            )
-            if out_col != cfg.get(f"out_col_{key}", ""):
-                cfg[f"out_col_{key}"] = out_col
-                save_config(cfg)
+        if fields:
+            out_cols = []
+            with c2:
+                for label, default_col in fields:
+                    col = st.text_input(
+                        f"{label} Column",
+                        value=cfg.get(f"out_col_{key}_{label}", default_col),
+                        key=f"out_col_input_{key}_{label}",
+                    )
+                    if col != cfg.get(f"out_col_{key}_{label}", ""):
+                        cfg[f"out_col_{key}_{label}"] = col
+                        save_config(cfg)
+                    out_cols.append((label, col))
+        else:
+            with c2:
+                out_col = st.text_input(
+                    "Output Column",
+                    value=cfg.get(f"out_col_{key}", menu["out_col_default"]),
+                    key=f"out_col_input_{key}",
+                )
+                if out_col != cfg.get(f"out_col_{key}", ""):
+                    cfg[f"out_col_{key}"] = out_col
+                    save_config(cfg)
+
+        out_col_list = [col for _, col in out_cols] if fields else [out_col]
 
         st.divider()
 
@@ -102,7 +128,7 @@ def render_menu(menu: dict):
             # নতুন ফাইলের কলাম অনুযায়ী সিলেকশন রিসেট
             st.session_state[f"sel_cols_{key}"] = list(st.session_state[f"df_{key}"].columns)
             # অটো: প্রথম খালি রোতে যাওয়া
-            auto_row = get_next_empty_row(st.session_state[f"df_{key}"], out_col)
+            auto_row = get_next_empty_row_multi(st.session_state[f"df_{key}"], out_col_list)
             st.session_state[f"row_{key}"] = auto_row if auto_row is not None else 0
 
         # df না থাকলে বন্ধ
@@ -176,9 +202,18 @@ def render_menu(menu: dict):
             st.code(message_text, language=None)
 
         # Already saved value
-        existing = str(row_data.get(out_col, "")).strip()
-        if existing and existing != "nan":
-            st.success(f"✅ আগে সেভ করা আছে: {existing[:120]}")
+        if fields:
+            saved_bits = [
+                f"{label}: {str(row_data.get(col, '')).strip()[:80]}"
+                for label, col in out_cols
+                if str(row_data.get(col, "")).strip() not in ("", "nan")
+            ]
+            if saved_bits:
+                st.success("✅ আগে সেভ করা আছে — " + " | ".join(saved_bits))
+        else:
+            existing = str(row_data.get(out_col, "")).strip()
+            if existing and existing != "nan":
+                st.success(f"✅ আগে সেভ করা আছে: {existing[:120]}")
 
         # ── Action buttons ────────────────────────────────────────────────────
         st.divider()
@@ -216,23 +251,54 @@ def render_menu(menu: dict):
 
         if response_text:
             st.subheader("Claude-এর উত্তর")
-            edited = st.text_area(
-                "উত্তর (দরকার হলে এডিট করুন, তারপর সেভ করুন)",
-                value=response_text,
-                height=220,
-                key=f"edit_{key}",
-            )
 
-            with b2:
-                if st.button("💾 সেভ ও পরের রো", key=f"save_{key}", type="primary"):
-                    path = st.session_state[f"path_{key}"]
-                    updated_df = save_result(df, cur, out_col, edited, path)
-                    st.session_state[f"df_{key}"] = updated_df
-                    st.session_state[f"response_{key}"] = ""
-                    if cur < total - 1:
-                        st.session_state[f"row_{key}"] += 1
-                    st.success("✅ সেভ হয়েছে!")
-                    st.rerun()
+            if fields:
+                st.caption("প্রতিটা ফিল্ড আলাদা কলামে সেভ হবে। উত্তর থেকে অটো আলাদা করা হয়েছে — দরকার হলে এডিট করুন।")
+                parsed = {label: extract_field(response_text, label) for label, _ in fields}
+                if not any(v.strip() for v in parsed.values()):
+                    # লেবেল অনুযায়ী আলাদা করা যায়নি — পুরো উত্তর প্রথম ফিল্ডে দেখানো হচ্ছে
+                    parsed[fields[0][0]] = response_text
+
+                edited_values = {}
+                for label, out_col_f in fields:
+                    edited_values[out_col_f] = st.text_area(
+                        label,
+                        value=parsed.get(label, ""),
+                        height=150,
+                        key=f"edit_{key}_{label}",
+                    )
+
+                with st.expander("🔍 Claude-এর আসল উত্তর (raw)"):
+                    st.code(response_text, language=None)
+
+                with b2:
+                    if st.button("💾 সেভ ও পরের রো", key=f"save_{key}", type="primary"):
+                        path = st.session_state[f"path_{key}"]
+                        updated_df = save_results(df, cur, edited_values, path)
+                        st.session_state[f"df_{key}"] = updated_df
+                        st.session_state[f"response_{key}"] = ""
+                        if cur < total - 1:
+                            st.session_state[f"row_{key}"] += 1
+                        st.success("✅ সেভ হয়েছে!")
+                        st.rerun()
+            else:
+                edited = st.text_area(
+                    "উত্তর (দরকার হলে এডিট করুন, তারপর সেভ করুন)",
+                    value=response_text,
+                    height=220,
+                    key=f"edit_{key}",
+                )
+
+                with b2:
+                    if st.button("💾 সেভ ও পরের রো", key=f"save_{key}", type="primary"):
+                        path = st.session_state[f"path_{key}"]
+                        updated_df = save_result(df, cur, out_col, edited, path)
+                        st.session_state[f"df_{key}"] = updated_df
+                        st.session_state[f"response_{key}"] = ""
+                        if cur < total - 1:
+                            st.session_state[f"row_{key}"] += 1
+                        st.success("✅ সেভ হয়েছে!")
+                        st.rerun()
 
         with b3:
             if st.button("⏭️ Skip", key=f"skip_{key}"):
@@ -243,8 +309,8 @@ def render_menu(menu: dict):
 
         # ── Progress ──────────────────────────────────────────────────────────
         st.divider()
-        if out_col in df.columns:
-            done = df[out_col].apply(lambda v: bool(str(v).strip()) and str(v).strip() != "nan").sum()
+        if any(c in df.columns for c in out_col_list):
+            done = sum(row_is_done(df.iloc[i].to_dict(), out_col_list) for i in range(total))
             st.progress(done / total, text=f"সম্পন্ন: {done}/{total} রো")
 
         # ── Download ──────────────────────────────────────────────────────────

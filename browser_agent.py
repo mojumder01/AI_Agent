@@ -273,9 +273,12 @@ class ClaudeAgent:
 
     def _extract_last_response(self) -> str:
         """পেজ থেকে Claude-এর শেষ রেসপন্স বের করে।"""
+        # সবচেয়ে বাইরের কন্টেইনার আগে চেষ্টা করা হয় — নেস্টেড '.prose' মাঝেমধ্যে
+        # পুরো উত্তরের বদলে শুধু একটা অংশ (যেমন একটা রিচ-টেক্সট/ডিফ ব্লক) ধরে,
+        # যার ফলে বাকি অংশ (Highlights ইত্যাদি) হারিয়ে যায়।
         selectors = [
-            '[data-message-author-role="assistant"] .prose',
             '[data-message-author-role="assistant"]',
+            '[data-message-author-role="assistant"] .prose',
             '.font-claude-message',
         ]
         for sel in selectors:

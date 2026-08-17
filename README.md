@@ -49,9 +49,20 @@ streamlit run app.py
 
 | Menu | কাজ | Output Column |
 |------|-----|---------------|
-| ✍️ Highlights & Description | পণ্যের বিবরণ লেখা | AI_Highlights_Description |
+| ✍️ Highlights & Description | পণ্যের বিবরণ লেখা | **AI_Highlights** ও **AI_Description** — দুটো আলাদা কলামে (নিচে দেখুন) |
 | ⚖️ Weight | ওজন হিসাব করা | AI_Weight |
 | 🖼️ Image Check | ছবির কোয়ালিটি ও watermark | AI_Image_Check |
+
+### Highlights & Description আলাদা কলামে কীভাবে সেভ হয়
+Claude-এর conversation-কে অবশ্যই উত্তর এই ফরম্যাটে দিতে বলতে হবে (আপনার prompt-এ এভাবে instruction দিন):
+```
+Highlights: <আপনার highlights এখানে>
+Description: <আপনার description এখানে>
+```
+অ্যাপ এই দুটো label খুঁজে বের করে **AI_Highlights** ও **AI_Description** — এই দুটো আলাদা কলামে সেভ করে (কলামের নাম Output Column বক্সে বদলানো যায়)। যদি Claude-এর উত্তরে এই label দুটো খুঁজে না পাওয়া যায়, পুরো উত্তরটা Highlights ফিল্ডে দেখানো হবে যাতে কোনো ডেটা হারিয়ে না যায়।
+
+## Claude Model / Extended Thinking সিলেক্ট করা
+এই অ্যাপ claude.ai-এর নিজস্ব ওয়েব চ্যাট automate করে — কোনো API call করে না। তাই model (Sonnet/Opus ইত্যাদি) বা extended thinking effort বদলাতে চাইলে সরাসরি সেই conversation-এ claude.ai-এর নিজের model selector থেকে বদলে দিন (ব্রাউজার উইন্ডোতেই)। একবার সিলেক্ট করলে সেই conversation-এর জন্য তা মনে থাকে, প্রতিটা রো-তে আলাদা করে সিলেক্ট করা লাগবে না।
 
 ## Image Check-এর জন্য
 Excel-এ একটা কলাম রাখুন যার নামে `image`, `img`, বা `photo` আছে।  

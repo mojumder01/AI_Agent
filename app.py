@@ -4,7 +4,7 @@ import os
 import traceback
 from excel_handler import load_excel, save_result, find_image_column, get_next_empty_row, to_excel_bytes
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 BUILT_BY = "Muntasir"
 
 st.set_page_config(page_title="AI Product Agent", page_icon="🤖", layout="wide")
@@ -260,8 +260,30 @@ def render_menu(menu: dict):
 for menu in MENUS:
     render_menu(menu)
 
-# ── Browser close button ──────────────────────────────────────────────────────
+# ── Browser / Session ──────────────────────────────────────────────────────
 st.sidebar.header("⚙️ Browser")
+
+if st.sidebar.button("🔑 Claude-এ লগইন করুন / সেভ করুন"):
+    with st.sidebar.status("ব্রাউজার খুলছে..."):
+        try:
+            from browser_agent import ClaudeAgent
+
+            agent: ClaudeAgent = st.session_state.get("agent")
+            if agent is None or not agent.is_alive():
+                agent = ClaudeAgent()
+                agent.start()
+                st.session_state["agent"] = agent
+
+            agent.open_login()
+        except Exception as e:
+            st.sidebar.error(f"Error: {type(e).__name__}: {e}")
+            st.sidebar.code(traceback.format_exc())
+    st.sidebar.info(
+        "খোলা ব্রাউজার উইন্ডোতে গিয়ে claude.ai-এ লগইন করুন। "
+        "একবার লগইন করলে সেশন সেভ থাকবে — বারবার লগইন করা লাগবে না। "
+        "লগইন শেষ হলে ব্রাউজার বন্ধ করার দরকার নেই।"
+    )
+
 if st.sidebar.button("🔴 Browser বন্ধ করুন"):
     agent = st.session_state.get("agent")
     if agent:
@@ -269,6 +291,7 @@ if st.sidebar.button("🔴 Browser বন্ধ করুন"):
         st.session_state["agent"] = None
     st.sidebar.success("Browser বন্ধ হয়েছে।")
 
+st.sidebar.caption(f"Session ফোল্ডার: `{os.path.expanduser('~/.claude_agent_browser_profile')}`")
 st.sidebar.divider()
 st.sidebar.caption(f"AI Product Agent v{APP_VERSION}")
 st.sidebar.caption(f"Built by {BUILT_BY}")

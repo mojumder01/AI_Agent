@@ -23,12 +23,18 @@ class ClaudeAgent:
     def start(self):
         os.makedirs(PROFILE_DIR, exist_ok=True)
         self._pw = sync_playwright().start()
-        self._context = self._pw.chromium.launch_persistent_context(
+        launch_kwargs = dict(
             user_data_dir=PROFILE_DIR,
             headless=False,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            args=["--disable-blink-features=AutomationControlled"],
             viewport={"width": 1200, "height": 800},
         )
+        try:
+            # আসল ইনস্টল করা Chrome ব্যবহার করলে claude.ai কম bot হিসেবে ধরে —
+            # bundled Chromium দিয়ে সেশন বারবার লগআউট হয়ে যাওয়ার সমস্যা কমে।
+            self._context = self._pw.chromium.launch_persistent_context(channel="chrome", **launch_kwargs)
+        except Exception:
+            self._context = self._pw.chromium.launch_persistent_context(**launch_kwargs)
         if self._context.pages:
             self._page = self._context.pages[0]
         else:
@@ -38,8 +44,32 @@ class ClaudeAgent:
         self._page.goto(url, wait_until="domcontentloaded")
         time.sleep(2)
 
+    def open_login(self):
+        """লগইন/সেশন সেভ করার জন্য claude.ai খোলে — ইউজার ম্যানুয়ালি লগইন করবেন।"""
+        self._page.goto("https://claude.ai", wait_until="domcontentloaded")
+        time.sleep(1)
+
+    def is_logged_in(self) -> bool:
+        try:
+            url = self._page.url
+            if "login" in url or "/auth" in url:
+                return False
+            if self._page.locator('input[type="email"]').count() > 0:
+                return False
+            if self._page.get_by_text("Log in", exact=False).count() > 0:
+                return False
+            return True
+        except Exception:
+            return True
+
     def send_message(self, text: str, image_path: str | None = None) -> str:
         """টেক্সট (এবং ছবি) Claude chat-এ পাঠায় এবং রেসপন্স রিটার্ন করে।"""
+        if not self.is_logged_in():
+            raise RuntimeError(
+                "Claude সেশন লগইন করা নেই। সাইডবার থেকে 'Claude-এ লগইন করুন / সেভ করুন' "
+                "বাটনে ক্লিক করে ব্রাউজার উইন্ডোতে লগইন করুন, তারপর আবার পাঠান।"
+            )
+
         # ইনপুট বক্স খোঁজা
         input_selectors = [
             'div[contenteditable="true"]',

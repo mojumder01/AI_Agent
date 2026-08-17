@@ -4,7 +4,7 @@ import os
 import traceback
 from excel_handler import load_excel, save_result, find_image_column, get_next_empty_row, to_excel_bytes
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 BUILT_BY = "Muntasir"
 
 st.set_page_config(page_title="AI Product Agent", page_icon="🤖", layout="wide")
@@ -91,10 +91,12 @@ def render_menu(menu: dict):
             key=f"upload_{key}",
         )
 
-        if uploaded:
+        upload_id = getattr(uploaded, "file_id", None) or (f"{uploaded.name}-{uploaded.size}" if uploaded else None)
+        if uploaded and st.session_state.get(f"upload_id_{key}") != upload_id:
+            st.session_state[f"upload_id_{key}"] = upload_id
             save_path = os.path.join(os.path.dirname(__file__), f"working_{key}.xlsx")
             with open(save_path, "wb") as f:
-                f.write(uploaded.read())
+                f.write(uploaded.getvalue())
             st.session_state[f"df_{key}"] = load_excel(save_path)
             st.session_state[f"path_{key}"] = save_path
             # নতুন ফাইলের কলাম অনুযায়ী সিলেকশন রিসেট

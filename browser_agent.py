@@ -253,8 +253,14 @@ class ClaudeAgent:
             'button[aria-label="Stop generating"]',
             'button[data-testid="stop-button"]',
         ]
-        max_wait = 120
+        max_wait = 180
         start = time.time()
+        # Stop বাটন মাঝে একবার ক্ষণিকের জন্য অদৃশ্য হয়ে যেতে পারে (যেমন Highlights
+        # আর Description-এর মধ্যে বিরতিতে) — একবার না দেখা গেলেই শেষ ধরে নিলে মাঝপথে
+        # কাটা রেসপন্স পাওয়া যায়। তাই পরপর কয়েকবার (৩ সেকেন্ড) স্টেবল না দেখা পর্যন্ত
+        # অপেক্ষা করা হয়।
+        stable_needed = 3
+        stable_count = 0
 
         while time.time() - start < max_wait:
             found_stop = False
@@ -262,8 +268,12 @@ class ClaudeAgent:
                 if self._page.locator(sel).count() > 0:
                     found_stop = True
                     break
-            if not found_stop:
-                break
+            if found_stop:
+                stable_count = 0
+            else:
+                stable_count += 1
+                if stable_count >= stable_needed:
+                    break
             time.sleep(1)
 
         # এক্সট্রা রেন্ডারের জন্য অপেক্ষা

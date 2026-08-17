@@ -8,7 +8,7 @@ from excel_handler import (
 )
 from response_parser import extract_field
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 BUILT_BY = "Muntasir"
 
 st.set_page_config(page_title="AI Product Agent", page_icon="🤖", layout="wide")

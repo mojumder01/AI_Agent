@@ -1,3 +1,11 @@
+import sys
+import asyncio
+
+# Streamlit (Tornado) forces the Windows event loop policy to Selector-based,
+# which can't spawn subprocesses — Playwright's sync API needs Proactor for that.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 from playwright.sync_api import sync_playwright, BrowserContext, Page
 import time
 import os
